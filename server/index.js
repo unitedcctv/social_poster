@@ -892,6 +892,71 @@ app.post('/api/shorten-for-bluesky', express.json(), async (req, res) => {
   }
 });
 
+// API endpoint to review and improve a post
+app.post('/api/review-post', express.json(), async (req, res) => {
+  const { content } = req.body;
+  
+  if (!content || !content.trim()) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Content is required' 
+    });
+  }
+  
+  if (!openaiClient) {
+    return res.status(503).json({ 
+      success: false, 
+      error: 'AI service not configured. Please add OPENAI_API_KEY to your .env file.' 
+    });
+  }
+  
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            "You are a social media expert who reviews and improves posts.",
+            "Analyze the post for clarity, engagement, tone, and impact.",
+            "Provide an improved version that:",
+            "- Maintains the original message and intent",
+            "- Uses authentic, human language (no corporate speak)",
+            "- Is concise and punchy",
+            "- Has proper hashtag placement (2-4 relevant hashtags at the end)",
+            "- Follows British English spelling",
+            "- Stays within character limits (500 for LinkedIn/Mastodon)",
+            "- Avoids emojis and clickbait",
+            "Return ONLY the improved post text, nothing else. No explanations, no preamble."
+          ].join(" ")
+        },
+        {
+          role: 'user',
+          content: `Review and improve this social media post:\n\n${content}`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 300
+    });
+    
+    const improvedContent = completion.choices[0].message.content.trim();
+    
+    res.json({
+      success: true,
+      original: content,
+      improved: improvedContent,
+      originalLength: content.length,
+      improvedLength: improvedContent.length
+    });
+  } catch (error) {
+    console.error('OpenAI review error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to review post' 
+    });
+  }
+});
+
 // API endpoint to generate post suggestions
 app.post('/api/suggest-posts', express.json(), async (req, res) => {
   const { topic } = req.body;
@@ -921,20 +986,62 @@ app.post('/api/suggest-posts', express.json(), async (req, res) => {
     
     if (process.env.TAVILY_API_KEY) {
       try {
-        const searchResponse = await axios.post('https://api.tavily.com/search', {
-          api_key: process.env.TAVILY_API_KEY,
-          query: topic,
-          search_depth: 'basic',
-          max_results: 3
+        // Step 1: Generate optimized search queries using ChatGPT-4o-mini
+        const queryPrompt = `You are an expert social strategist. 
+Given this topic: "${topic}",
+generate 3 concise, high-quality web search queries 
+that would surface the most current, factual, and engaging information 
+for creating social media posts (Mastodon, Bluesky, LinkedIn).
+Focus on recent news, trends, or local events if relevant.
+Return as a numbered list.`;
+
+        const queryCompletion = await openaiClient.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'user',
+              content: queryPrompt
+            }
+          ],
+          temperature: 0.7,
+          max_tokens: 200
         });
         
-        if (searchResponse.data && searchResponse.data.results) {
-          const searchResults = searchResponse.data.results
+        const queriesText = queryCompletion.choices[0].message.content;
+        
+        // Parse the numbered queries
+        const searchQueries = queriesText
+          .split('\n')
+          .filter(line => line.trim().match(/^\d+[\.\)]/))
+          .map(line => line.replace(/^\d+[\.\)]\s*/, '').trim())
+          .filter(q => q.length > 0);
+        
+        console.log('Generated search queries:', searchQueries);
+        
+        // Step 2: Use the generated queries for Tavily search
+        const allSearchResults = [];
+        
+        for (const query of searchQueries.slice(0, 3)) {
+          const searchResponse = await axios.post('https://api.tavily.com/search', {
+            api_key: process.env.TAVILY_API_KEY,
+            query: query,
+            search_depth: 'basic',
+            max_results: 2
+          });
+          
+          if (searchResponse.data && searchResponse.data.results) {
+            allSearchResults.push(...searchResponse.data.results);
+          }
+        }
+        
+        if (allSearchResults.length > 0) {
+          const searchResults = allSearchResults
+            .slice(0, 5) // Limit to top 5 results
             .map(r => `${r.title}: ${r.content}`)
             .join('\n');
           searchContext = `\n\nRecent web research about "${topic}":\n${searchResults}`;
           searchStatus.success = true;
-          searchStatus.message = `Found ${searchResponse.data.results.length} web sources`;
+          searchStatus.message = `Found ${allSearchResults.length} web sources using ${searchQueries.length} queries`;
         }
       } catch (searchError) {
         console.log('Web search failed, continuing without it:', searchError.message);

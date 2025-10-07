@@ -24,6 +24,9 @@ function App() {
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [searchStatus, setSearchStatus] = useState(null);
   const [isShortening, setIsShortening] = useState(false);
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewedContent, setReviewedContent] = useState(null);
+  const [isReviewing, setIsReviewing] = useState(false);
 
   // Load configuration on component mount
   React.useEffect(() => {
@@ -162,6 +165,48 @@ function App() {
     }
   };
 
+  const handleReviewPost = async () => {
+    if (!postContent.trim()) return;
+    
+    setIsReviewing(true);
+    try {
+      const response = await fetch('http://localhost:5000/api/review-post', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ content: postContent }),
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        setReviewedContent(data);
+        setShowReviewModal(true);
+      } else {
+        alert('Failed to review post: ' + (data.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error reviewing post:', error);
+      alert('Failed to review post. Make sure the server is running.');
+    } finally {
+      setIsReviewing(false);
+    }
+  };
+
+  const handleAcceptReview = () => {
+    if (reviewedContent && reviewedContent.improved) {
+      setPostContent(reviewedContent.improved);
+      setBlueskyContent(''); // Clear Bluesky content so user can re-shorten if needed
+    }
+    setShowReviewModal(false);
+    setReviewedContent(null);
+  };
+
+  const handleRejectReview = () => {
+    setShowReviewModal(false);
+    setReviewedContent(null);
+  };
+
   const handleSelectSuggestion = (suggestion) => {
     setPostContent(suggestion);
     setBlueskyContent(''); // Clear Bluesky content - user can click "Auto-shorten" if needed
@@ -250,9 +295,20 @@ function App() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="linkedin-mastodon-content" className="platform-label">
-              <strong>LinkedIn & Mastodon</strong> (500 characters max)
-            </label>
+            <div className="label-with-button">
+              <label htmlFor="linkedin-mastodon-content" className="platform-label">
+                <strong>LinkedIn & Mastodon</strong> (500 characters max)
+              </label>
+              <button
+                type="button"
+                className="review-btn"
+                onClick={handleReviewPost}
+                disabled={!postContent.trim() || isReviewing || isPosting}
+                title="Get AI review and improvement suggestions"
+              >
+                {isReviewing ? '🔍 Reviewing...' : '🔍 Review'}
+              </button>
+            </div>
             <textarea
               id="linkedin-mastodon-content"
               value={postContent}
@@ -638,6 +694,64 @@ function App() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Review Modal */}
+      {showReviewModal && reviewedContent && (
+        <div className="modal-overlay" onClick={handleRejectReview}>
+          <div className="modal-content review-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>🔍 Post Review</h2>
+              <button 
+                className="modal-close"
+                onClick={handleRejectReview}
+              >
+                ×
+              </button>
+            </div>
+            
+            <div className="modal-body">
+              <div className="review-comparison">
+                <div className="review-section-box">
+                  <h3>Your Original</h3>
+                  <div className="review-content original">
+                    {reviewedContent.original}
+                  </div>
+                  <div className="character-count">
+                    {reviewedContent.originalLength} characters
+                  </div>
+                </div>
+
+                <div className="review-arrow">→</div>
+
+                <div className="review-section-box">
+                  <h3>AI Suggestion</h3>
+                  <div className="review-content improved">
+                    {reviewedContent.improved}
+                  </div>
+                  <div className="character-count">
+                    {reviewedContent.improvedLength} characters
+                  </div>
+                </div>
+              </div>
+
+              <div className="review-actions">
+                <button 
+                  className="review-reject-btn"
+                  onClick={handleRejectReview}
+                >
+                  Keep Original
+                </button>
+                <button 
+                  className="review-accept-btn"
+                  onClick={handleAcceptReview}
+                >
+                  Use Suggestion
+                </button>
+              </div>
             </div>
           </div>
         </div>
